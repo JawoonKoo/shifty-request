@@ -12,8 +12,8 @@ module ShiftyRequest
       def request(edit_month:)
         response = HTTParty.post(url, headers: headers, body: body(edit_month:).to_json)
 
-        if is_token_expired?(response:)
-          throw(Exception.new('인증 토큰이 만료되었습니다.'))
+        if auth_error?(response:)
+          raise Exception.new("인증 토큰에 문제가 있습니다. .env 파일의 COOKIE 설정을 확인해주세요.\n(서버 응답: #{response.body})")
         end
 
         parse_response_body(body: JSON.parse(response.body))
@@ -21,12 +21,11 @@ module ShiftyRequest
 
       private
 
-      def is_token_expired?(response:)
-        unless response.respond_to?(:match)
-          return false
-        end
+      def auth_error?(response:)
+        body = response.body
+        return false unless body.is_a?(String)
 
-        response&.match(/ExpiredAuthToken/).present?
+        body.include?('ExpiredAuthToken') || body.include?('NoAuthToken')
       end
 
       def parse_response_body(body:)
