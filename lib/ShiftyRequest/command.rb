@@ -10,24 +10,54 @@ module ShiftyRequest
       end
     end
     def initialize(argv)
-      @edit_attendance = Request::EditAttendance.new
+      @edit_attendance_request = Request::EditAttendance.new
+      @create_attendance_request = Request::CreateAttendance.new
       @load_attendance = Request::LoadAttendance.new
-      @make_edit_attendance_service = Service::MakeEditAttendanceService.new
+      @make_attendance_service = Service::MakeAttendanceService.new
       @argv = argv
     end
 
     def run
-      edit_month = load_edit_month
+      target_date_env = ENV['TARGET_DATE']
+      
+      if target_date_env
+        target_date = Date.parse(target_date_env)
+        edit_month = target_date.to_time
+        working_time = load_working_time
+        attendances = load_attendances_history(working_time:, edit_month:)
+        
+        range_start = target_date
+        range_end = target_date
+      else
+        edit_month = load_edit_month
+        working_time = load_working_time
+        attendances = load_attendances_history(working_time:, edit_month:)
 
-      working_time = load_working_time
-      attendances = load_attendances_history(working_time:, edit_month:)
-      edit_attendances =  @make_edit_attendance_service.run(attendances:, working_time:)
-      puts edit_attendances.map { |attendance| attendance.to_s(working_time) }
+        range_start = edit_month.to_date
+        range_end = [edit_month.end_of_month.to_date, Date.today].min
+      end
+      
+      skip_dates = ENV['SKIP_DATES']&.split(',')&.map(&:strip) || []
 
-      puts '해당 기록을 수정하시겠습니까? (Y/N)'
+      requests = (range_start..range_end).map do |date|
+        next if !target_date_env && Extend::DateUtil.holiday?(date)
+        next if skip_dates.include?(date.to_s)
+
+        attendance = attendances.find { |a| a.clock_time.in_time.to_date == date }
+        @make_attendance_service.run(date:, attendance:, working_time:)
+      end.compact
+
+      puts requests.map { |req| req.to_s(working_time) }
+
+      if requests.empty?
+        puts '수정/생성할 기록이 없습니다.'
+        return
+      end
+
+      puts '해당 기록을 반영하시겠습니까? (Y/N)'
       answer = gets.chomp
       if answer == 'Y' || answer == 'y'
-        send_edit_request(working_time:, edit_attendances:)
+        send_requests(requests, working_time)
       end
     end
 
@@ -61,9 +91,19 @@ module ShiftyRequest
       @load_attendance.request(edit_month:)
     end
 
-    def send_edit_request(edit_attendances:, working_time:)
-      puts '수정 요청 전송을 시작합니다.'
-      @edit_attendance.call(edit_attendances:, working_time:)
+    def send_requests(requests, working_time)
+      create_tasks = requests.select { |r| r.is_a?(Model::CreateAttendance) }
+      edit_tasks = requests.select { |r| r.is_a?(Model::EditAttendance) }
+
+      if create_tasks.any?
+        puts '출퇴근 기록 생성을 시작합니다.'
+        @create_attendance_request.call(create_attendances: create_tasks, working_time:)
+      end
+
+      if edit_tasks.any?
+        puts '출퇴근 기록 수정을 시작합니다.'
+        @edit_attendance_request.call(edit_attendances: edit_tasks, working_time:)
+      end
     end
   end
 end
